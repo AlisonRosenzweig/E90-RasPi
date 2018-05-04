@@ -31,6 +31,39 @@ import json
 import logging
 import threading
 import time
+import RPi.GPIO as GPIO
+
+# Setup GPIO.
+# Deal with the "reset pin" to make up for taking it out of BNO constructor.
+GPIO.setmode(GPIO.BOARD)
+GPIO.setup(18, GPIO.OUT) 
+
+# Setup servo controls.
+SERVO_PIN = 40
+GPIO.setup(SERVO_PIN, GPIO.OUT)
+pwm=GPIO.PWM(SERVO_PIN, 50)
+pwm.start(0)
+
+def set_servo_angle(angle):
+    duty = angle / 18 + 2
+    GPIO.output(SERVO_PIN, True)
+    pwm.ChangeDutyCycle(duty)
+    time.sleep(1)
+    GPIO.output(SERVO_PIN, False)
+    pwm.ChangeDutyCycle(0)
+    return "Setting angle to " + str(angle)
+
+def pen_up():
+    return set_servo_angle(135)
+
+def pen_down():
+    return set_servo_angle(90)
+
+def clean_up():
+    pen_up()
+    pwm.stop()
+    GPIO.cleanup()
+    return "cleaning up"
 
 from flask import *
 
@@ -40,7 +73,8 @@ from Adafruit_BNO055 import BNO055
 # Create and configure the BNO sensor connection.  Make sure only ONE of the
 # below 'bno = ...' lines is uncommented:
 # Raspberry Pi configuration with serial UART and RST connected to GPIO 18:
-bno = BNO055.BNO055(serial_port='/dev/ttyAMA0', rst=18)
+bno = BNO055.BNO055(serial_port='/dev/ttyAMA0', # rst=18, 
+        gpio=GPIO)
 # BeagleBone Black configuration with default I2C connection (SCL=P9_19, SDA=P9_20),
 # and RST connected to pin P9_12:
 #bno = BNO055.BNO055(rst='P9_12')
@@ -48,7 +82,8 @@ bno = BNO055.BNO055(serial_port='/dev/ttyAMA0', rst=18)
 # Application configuration below.  You probably don't need to change these values.
 
 # How often to update the BNO sensor data (in hertz).
-BNO_UPDATE_FREQUENCY_HZ = 10
+# NOTE: max sampling rate of the BNO is 100 Hz.
+BNO_UPDATE_FREQUENCY_HZ = 100
 
 # Name of the file to store calibration data when the save/load calibration
 # button is pressed.  Calibration data is stored in JSON format.
@@ -81,6 +116,8 @@ bno_changed = threading.Condition()
 # the first request is served (see start_bno_thread below).
 bno_thread = None
 
+# Import servo helper library and setup pins for servo
+# import servoControl
 
 def read_bno():
     """Function to read the BNO sensor and update the bno_data object with the
@@ -132,7 +169,7 @@ def bno_sse():
         data = {'heading': heading, 'roll': roll, 'pitch': pitch, 'temp': temp,
                 'quatX': x, 'quatY': y, 'quatZ': z, 'quatW': w,
                 'calSys': sys, 'calGyro': gyro, 'calAccel': accel, 'calMag': mag }
-        yield 'data: {0}\n\n'.format(json.dumps(data))
+        return str(json.dumps(data))
 
 
 @app.before_first_request
@@ -156,7 +193,23 @@ def start_bno_thread():
 def bno_path():
     # Return SSE response and call bno_sse function to stream sensor data to
     # the webpage.
-    return Response(bno_sse(), mimetype='text/event-stream')
+    return bno_sse()
+
+@app.route('/pen_up')
+def pen_up_path():
+    return pen_up()
+
+@app.route('/pen_down')
+def pen_down_path():
+    return pen_down()
+
+@app.route('/move_to_<angle>')
+def move_to_angle(angle):
+    return set_servo_angle(float(angle))
+
+@app.route('/cleanup')
+def cleanup_servo():
+    return clean_up()
 
 @app.route('/save_calibration', methods=['POST'])
 def save_calibration():
@@ -184,7 +237,6 @@ def load_calibration():
 def root():
     return render_template('index.html')
 
-
 if __name__ == '__main__':
     # Create a server listening for external connections on the default
     # port 5000.  Enable debug mode for better error messages and live
@@ -192,3 +244,6 @@ if __name__ == '__main__':
     # so multiple connections can be processed at once (very important
     # for using server sent events).
     app.run(host='0.0.0.0', debug=True, threaded=True)
+
+
+
